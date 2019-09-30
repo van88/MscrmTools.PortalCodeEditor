@@ -1,15 +1,23 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.ServiceModel;
-using Microsoft.Xrm.Sdk;
+﻿using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Query;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.ServiceModel;
 
 namespace MscrmTools.PortalCodeEditor.AppCode
 {
     public class WebPage : EditablePortalItem
     {
+        #region Constants
+
+        public const string NODEKEY = "WebPage";
+        public const string NODENAME = "Web Pages";
+
+        #endregion Constants
+
         #region Variables
 
         private readonly Entity innerRecord;
@@ -22,11 +30,12 @@ namespace MscrmTools.PortalCodeEditor.AppCode
         {
             Id = record.Id;
 
-            JavaScript = new CodeItem(record.GetAttributeValue<string>("adx_customjavascript"), CodeItemType.JavaScript,
-                false, this);
+            Copy = new CodeItem(record.GetAttributeValue<string>("adx_copy"), CodeItemType.LiquidTemplate, false, this);
+            JavaScript = new CodeItem(record.GetAttributeValue<string>("adx_customjavascript"), CodeItemType.JavaScript, false, this);
             Style = new CodeItem(record.GetAttributeValue<string>("adx_customcss"), CodeItemType.Style, false, this);
-
             IsRoot = record.GetAttributeValue<bool>("adx_isroot");
+
+            PartialUrl = record.GetAttributeValue<string>("adx_partialurl");
 
             ParentPageId = record.GetAttributeValue<EntityReference>("adx_rootwebpageid")?.Id ?? Guid.Empty;
             Language = record.GetAttributeValue<EntityReference>("adx_webpagelanguageid")?.Name ?? "no language";
@@ -44,12 +53,13 @@ namespace MscrmTools.PortalCodeEditor.AppCode
 
         #region Properties
 
-        public CodeItem JavaScript { get; }
-        public CodeItem Style { get; }
+        public CodeItem Copy { get; }
         public bool IsRoot { get; }
-
-        public Guid ParentPageId { get; }
+        public CodeItem JavaScript { get; }
         public string Language { get; }
+        public Guid ParentPageId { get; }
+        public string PartialUrl { get; }
+        public CodeItem Style { get; }
 
         #endregion Properties
 
@@ -61,7 +71,7 @@ namespace MscrmTools.PortalCodeEditor.AppCode
             {
                 var records = service.RetrieveMultiple(new QueryExpression("adx_webpage")
                 {
-                    ColumnSet = new ColumnSet("adx_name", "adx_customjavascript", "adx_customcss", "adx_websiteid", "adx_webpagelanguageid", "adx_rootwebpageid", "adx_isroot"),
+                    ColumnSet = new ColumnSet("adx_name", "adx_customjavascript", "adx_customcss", "adx_websiteid", "adx_webpagelanguageid", "adx_rootwebpageid", "adx_isroot", "adx_partialurl", "adx_copy"),
                     Orders = { new OrderExpression("adx_isroot", OrderType.Descending), new OrderExpression("adx_name", OrderType.Ascending) }
                 }).Entities;
 
@@ -73,7 +83,7 @@ namespace MscrmTools.PortalCodeEditor.AppCode
                 {
                     var records = service.RetrieveMultiple(new QueryExpression("adx_webpage")
                     {
-                        ColumnSet = new ColumnSet("adx_name", "adx_customjavascript", "adx_customcss", "adx_websiteid"),
+                        ColumnSet = new ColumnSet("adx_name", "adx_customjavascript", "adx_customcss", "adx_websiteid", "adx_partialurl"),
                         Orders = { new OrderExpression("adx_name", OrderType.Ascending) }
                     }).Entities;
 
@@ -83,8 +93,23 @@ namespace MscrmTools.PortalCodeEditor.AppCode
             }
         }
 
+        public override string RefreshContent(CodeItem item, IOrganizationService service)
+        {
+            var record = service.Retrieve(innerRecord.LogicalName, innerRecord.Id,
+                new ColumnSet(item.Type == CodeItemType.JavaScript ? "adx_customjavascript" : item.Type == CodeItemType.Style ? "adx_customcss" : "adx_copy"));
+
+            innerRecord.RowVersion = record.RowVersion;
+
+            return item.Type == CodeItemType.JavaScript
+                ? record.GetAttributeValue<string>("adx_customjavascript")
+                : item.Type == CodeItemType.Style
+                    ? record.GetAttributeValue<string>("adx_customcss")
+                    : record.GetAttributeValue<string>("adx_copy");
+        }
+
         public override void Update(IOrganizationService service, bool forceUpdate = false)
         {
+            innerRecord["adx_copy"] = Copy.Content;
             innerRecord["adx_customjavascript"] = JavaScript.Content;
             innerRecord["adx_customcss"] = Style.Content;
 
@@ -99,21 +124,26 @@ namespace MscrmTools.PortalCodeEditor.AppCode
             var updatedRecord = service.Retrieve(innerRecord.LogicalName, innerRecord.Id, new ColumnSet());
             innerRecord.RowVersion = updatedRecord.RowVersion;
 
+            Copy.State = CodeItemState.None;
             JavaScript.State = CodeItemState.None;
             Style.State = CodeItemState.None;
             HasPendingChanges = false;
         }
 
-        public override string RefreshContent(CodeItem item, IOrganizationService service)
+        /// <summary>
+        /// Write the contents of the code object to disk
+        /// </summary>
+        /// <param name="path"></param>
+        public override void WriteContent(string path)
         {
-            var record = service.Retrieve(innerRecord.LogicalName, innerRecord.Id,
-                new ColumnSet(item.Type == CodeItemType.JavaScript ? "adx_customjavascript" : "adx_customcss"));
+            var filePath = Path.Combine(path, "Content.html");
+            Copy?.WriteCodeItem(filePath);
 
-            innerRecord.RowVersion = record.RowVersion;
+            filePath = Path.Combine(path, "JavaScript.js");
+            JavaScript?.WriteCodeItem(filePath);
 
-            return item.Type == CodeItemType.JavaScript
-                ? record.GetAttributeValue<string>("adx_customjavascript")
-                : record.GetAttributeValue<string>("adx_customcss");
+            filePath = Path.Combine(path, "Style.css");
+            Style?.WriteCodeItem(filePath);
         }
 
         #endregion Methods
